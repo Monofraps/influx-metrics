@@ -48,8 +48,7 @@ public class GarbageCollectorMetrics {
         for (final GarbageCollectorMXBean gc : garbageCollectors) {
             final String name = WHITESPACE.matcher(gc.getName()).replaceAll("-");
             registry.timeSeries(measurementName,
-                    ImmutableList.of(new MetricTag("collectorName", name)),
-                    ImmutableList.of(new Gauge<>("count", gc::getCollectionCount), new Gauge<>("time", gc::getCollectionTime)));
-        }
+                    ImmutableList.of(new MetricTag("collectorName", name)), ImmutableList.of(new Gauge<>("count", gc::getCollectionCount), new Gauge<>("collectionTime", gc::getCollectionTime)));
+		}
     }
 }

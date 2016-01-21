@@ -9,8 +9,9 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Creates a measurement series for JVM thread states.
@@ -25,6 +26,8 @@ import java.util.List;
 public class ThreadStateMetrics {
     private final ThreadMXBean threads;
     private final String measurementName;
+    private final AtomicLong reloadAt = new AtomicLong(System.currentTimeMillis() + 1000);
+    private AtomicReference<ThreadInfo[]> threadInfo = new AtomicReference<>();
 
     /**
      * Creates a new measurement series for jvm thread states using the default MX bean and measurement name 'jvm_threads'.
@@ -51,6 +54,11 @@ public class ThreadStateMetrics {
     public ThreadStateMetrics(ThreadMXBean threads, String measurementName) {
         this.threads = threads;
         this.measurementName = measurementName;
+        threadInfo.set(getThreadInfo());
+    }
+
+    ThreadInfo[] getThreadInfo() {
+        return threads.getThreadInfo(threads.getAllThreadIds(), 0);
     }
 
     public void registerSeries(InfluxSeriesRegistry registry) {
@@ -75,11 +83,28 @@ public class ThreadStateMetrics {
     }
 
     private long getThreadCount(Thread.State state) {
-        final ThreadInfo[] allThreads = getThreadInfo();
-        return Arrays.stream(allThreads).filter(t -> t != null && t.getThreadState() == state).count();
+        update();
+        long count = 0;
+        for (ThreadInfo info : threadInfo.get()) {
+            if (info != null && info.getThreadState() == state) {
+                count++;
+            }
+        }
+
+        return count;
     }
 
-    ThreadInfo[] getThreadInfo() {
-        return threads.getThreadInfo(threads.getAllThreadIds(), 0);
+    private void update() {
+        while (true) {
+            final long now = System.currentTimeMillis();
+            final long nextReload = reloadAt.get();
+            if (nextReload > now) {
+                return;
+            }
+
+            if (reloadAt.compareAndSet(nextReload, now + 1000)) {
+                threadInfo.set(getThreadInfo());
+            }
+        }
     }
 }

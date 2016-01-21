@@ -1,6 +1,7 @@
 package net.monofraps.influxmetrics;
 
 import com.google.common.collect.ImmutableCollection;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import net.monofraps.influxmetrics.reflection.ReflectionUtils;
 import org.slf4j.Logger;
@@ -22,22 +23,17 @@ import java.util.stream.Collectors;
  * @param <T> Event model type.
  */
 public class EventSeries<T> implements InfluxSeries {
+    private static final Logger logger = LoggerFactory.getLogger(EventSeries.class);
     private final String measurementName;
     private final Map<String, String> tags;
     private final BlockingQueue<DataPoint> events = new LinkedBlockingQueue<>();
-    private final ImmutableCollection<Method> fields;
-    private static final Logger logger = LoggerFactory.getLogger(EventSeries.class);
+    private final ImmutableCollection<GetterField> fields;
 
-    public void commitEvent(T event) {
-        try {
-            Map<String, Object> fieldValues = new HashMap<>();
-            for (Method fieldGetter : fields) {
-                fieldValues.put(fieldGetter.getName().substring(3), fieldGetter.invoke(event));
-            }
-            events.offer(new DataPoint(System.currentTimeMillis(), TimeUnit.MILLISECONDS, fieldValues));
-        } catch (IllegalAccessException | InvocationTargetException e) {
-            logger.error("Failed to get event field value", e);
-        }
+    protected EventSeries(String measurementName, List<MetricTag> tags, ImmutableCollection<Method> fields) {
+        this.measurementName = measurementName;
+        this.tags = tags.stream().collect(Collectors.toMap(MetricTag::getTagName, MetricTag::getTagValue));
+
+        this.fields = ImmutableList.copyOf(fields.stream().map(fieldGetter -> new GetterField(fieldGetter.getName().substring(3), fieldGetter)).collect(Collectors.toList()));
     }
 
     /**
@@ -56,15 +52,21 @@ public class EventSeries<T> implements InfluxSeries {
         return new Builder<>(name, fields);
     }
 
-    protected EventSeries(String measurementName, List<MetricTag> tags, ImmutableCollection<Method> fields) {
-        this.measurementName = measurementName;
-        this.tags = tags.stream().collect(Collectors.toMap(MetricTag::getTagName, MetricTag::getTagValue));
-        this.fields = fields;
+    public void commitEvent(T event) {
+        try {
+            final Map<String, Object> fieldValues = new HashMap<>(fields.size(), 1f);
+            for (GetterField fieldGetter : fields) {
+                fieldValues.put(fieldGetter.getName(), fieldGetter.invoke(event));
+            }
+            events.offer(new DataPoint(System.currentTimeMillis(), TimeUnit.MILLISECONDS, fieldValues));
+        } catch (IllegalAccessException | InvocationTargetException e) {
+            logger.error("Failed to get event field value", e);
+        }
     }
 
     @Override
     public List<String> getFieldNames() {
-        return fields.stream().map(field -> field.getName().substring(3)).collect(Collectors.toList());
+        return fields.stream().map(GetterField::getName).collect(Collectors.toList());
     }
 
     @Override
@@ -83,6 +85,25 @@ public class EventSeries<T> implements InfluxSeries {
         events.drainTo(valueSets);
 
         return valueSets;
+    }
+
+    private static class GetterField {
+        private final Method getter;
+        private final String name;
+
+        public GetterField(String name, Method getter) {
+
+            this.getter = getter;
+            this.name = name;
+        }
+
+        public Object invoke(Object target) throws InvocationTargetException, IllegalAccessException {
+            return getter.invoke(target);
+        }
+
+        public String getName() {
+            return name;
+        }
     }
 
     public static class Builder<T> {

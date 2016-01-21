@@ -1,5 +1,6 @@
 package net.monofraps.influxmetrics.jvm;
 
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import net.monofraps.influxmetrics.InfluxSeriesRegistry;
 import net.monofraps.influxmetrics.MetricTag;
@@ -27,14 +28,12 @@ import java.util.regex.Pattern;
  *  init, used, max, committed, usage
  */
 public class MemoryUsageMetrics {
-    private static final Pattern WHITESPACE = Pattern.compile("[\\s]+");
-
     public static final String INIT_FIELD_NAME = "init";
     public static final String USED_FIELD_NAME = "used";
     public static final String MAX_FIELD_NAME = "max";
     public static final String COMMITTED_FIELD_NAME = "committed";
     public static final String USAGE_FIELD_NAME = "usage";
-
+    private static final Pattern WHITESPACE = Pattern.compile("[\\s]+");
     private final MemoryMXBean mxBean;
     private final List<MemoryPoolMXBean> memoryPools;
     private final String measurementName;
@@ -67,22 +66,28 @@ public class MemoryUsageMetrics {
     }
 
     public void registerSeries(InfluxSeriesRegistry registry) {
-        createMeasurementSeries(registry, ImmutableList.of(new MetricTag("memoryType", "heap")), mxBean.getHeapMemoryUsage());
-        createMeasurementSeries(registry, ImmutableList.of(new MetricTag("memoryType", "non-heap")), mxBean.getNonHeapMemoryUsage());
+		createSeries(registry, ImmutableList.of(new MetricTag("memoryType", "heap")), mxBean::getHeapMemoryUsage);
+		createSeries(registry, ImmutableList.of(new MetricTag("memoryType", "non-heap")), mxBean::getNonHeapMemoryUsage);
 
         for (final MemoryPoolMXBean pool : memoryPools) {
             final String poolName = WHITESPACE.matcher(pool.getName()).replaceAll("-");
-            createMeasurementSeries(registry, ImmutableList.of(new MetricTag("memoryType", "pool"), new MetricTag("poolName", poolName)), pool.getUsage());
+			createSeries(registry, ImmutableList.of(new MetricTag("memoryType", "pool"), new MetricTag("poolName", poolName)), pool::getUsage);
         }
     }
 
-    private void createMeasurementSeries(InfluxSeriesRegistry registry, List<MetricTag> tags, MemoryUsage memoryUsage) {
-        List<IMeasurementField> fields = new ArrayList<>(5);
-        fields.add(new Gauge<>(INIT_FIELD_NAME, memoryUsage::getInit));
-        fields.add(new Gauge<>(USED_FIELD_NAME, memoryUsage::getUsed));
-        fields.add(new Gauge<>(MAX_FIELD_NAME, memoryUsage::getMax));
-        fields.add(new Gauge<>(COMMITTED_FIELD_NAME, memoryUsage::getCommitted));
-        fields.add(new Gauge<>(USAGE_FIELD_NAME, () -> memoryUsage.getUsed() / memoryUsage.getMax() == -1 ? memoryUsage.getCommitted() : memoryUsage.getMax()));
-        registry.timeSeries(measurementName, tags, fields);
-    }
+	private void createSeries(InfluxSeriesRegistry registry, List<MetricTag> tags, Supplier<MemoryUsage> usageSupplier) {
+		List<IMeasurementField> fields = new ArrayList<>(5);
+		fields.add(new Gauge<>(INIT_FIELD_NAME, () -> usageSupplier.get().getInit()));
+		fields.add(new Gauge<>(USED_FIELD_NAME, () -> usageSupplier.get().getUsed()));
+		fields.add(new Gauge<>(MAX_FIELD_NAME, () -> usageSupplier.get().getMax()));
+		fields.add(new Gauge<>(COMMITTED_FIELD_NAME, () -> usageSupplier.get().getCommitted()));
+		fields.add(new Gauge<>(USAGE_FIELD_NAME, () -> {
+			final MemoryUsage memoryUsage = usageSupplier.get();
+			return memoryUsage.getUsed() / memoryUsage.getMax() == -1 ?
+					usageSupplier.get().getCommitted() / memoryUsage.getMax() :
+					memoryUsage.getUsed() / memoryUsage.getMax();
+		}));
+
+		registry.timeSeries(measurementName, tags, fields);
+	}
 }

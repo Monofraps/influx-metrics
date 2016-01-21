@@ -43,6 +43,11 @@ public class JmxReporter implements RegistryEventListener {
 
     }
 
+    @Override
+    public void onSeriesRegistered(InfluxSeries series) {
+        registerSeries(series);
+    }
+
     private void registerSeries(final InfluxSeries influxSeries) {
         try {
             if(influxSeries instanceof EventSeries) {
@@ -72,11 +77,6 @@ public class JmxReporter implements RegistryEventListener {
     }
 
     @Override
-    public void onSeriesRegistered(InfluxSeries series) {
-        registerSeries(series);
-    }
-
-    @Override
     public void onSeriesRemoved(InfluxSeries series) {
         unregisterSeries(series);
     }
@@ -103,16 +103,6 @@ public class JmxReporter implements RegistryEventListener {
         }
 
         @Override
-        public Object getAttribute(String attribute) throws AttributeNotFoundException, MBeanException, ReflectionException {
-            final Collection<DataPoint> valueSets = timeSeries.getValueSets();
-            if (valueSets.isEmpty()) {
-                throw new RuntimeOperationsException(new RuntimeException("No datapoints available"));
-            }
-
-            return valueSets.iterator().next().getFields().get(attribute);
-        }
-
-        @Override
         public void setAttribute(Attribute attribute) throws AttributeNotFoundException, InvalidAttributeValueException, MBeanException, ReflectionException {
             throw new MBeanException(new OperationsException("Cannot set attribute"));
         }
@@ -132,6 +122,16 @@ public class JmxReporter implements RegistryEventListener {
         }
 
         @Override
+        public Object getAttribute(String attribute) throws AttributeNotFoundException, MBeanException, ReflectionException {
+            final Collection<DataPoint> valueSets = timeSeries.getValueSets();
+            if (valueSets.isEmpty()) {
+                throw new RuntimeOperationsException(new RuntimeException("No datapoints available"));
+            }
+
+            return valueSets.iterator().next().getFields().get(attribute);
+        }
+
+        @Override
         public AttributeList setAttributes(AttributeList attributes) {
             return null;
         }
@@ -143,7 +143,10 @@ public class JmxReporter implements RegistryEventListener {
 
         @Override
         public MBeanInfo getMBeanInfo() {
-            final List<MBeanAttributeInfo> mBeanAttributes = timeSeries.getFieldNames().stream().map(fieldName -> new MBeanAttributeInfo(fieldName, Object.class.getCanonicalName(), "", true, false, false)).collect(Collectors.toCollection(LinkedList::new));
+			final Collection<DataPoint> sampleValues = timeSeries.getValueSets();
+			final DataPoint sampleValue = sampleValues.iterator().next();
+
+			final List<MBeanAttributeInfo> mBeanAttributes = sampleValue.getFields().entrySet().stream().map(fieldEntry -> new MBeanAttributeInfo(fieldEntry.getKey(), fieldEntry.getValue().getClass().getCanonicalName(), "", true, false, false)).collect(Collectors.toCollection(LinkedList::new));
             return new MBeanInfo(InfluxSeriesMBean.class.getCanonicalName(), "", mBeanAttributes.toArray(new MBeanAttributeInfo[0]), null, null, null);
         }
     }

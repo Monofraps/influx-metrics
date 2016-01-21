@@ -2,8 +2,6 @@ package net.monofraps.influxmetrics;
 
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
-import net.monofraps.influxmetrics.fields.Gauge;
-import net.monofraps.influxmetrics.fields.PassiveGauge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,108 +16,91 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author monofraps
  */
 public abstract class ScheduledReporter {
-    private static final Logger logger = LoggerFactory.getLogger(ScheduledReporter.class);
+	private static final Logger logger = LoggerFactory.getLogger(ScheduledReporter.class);
+	private static final AtomicInteger FACTORY_ID = new AtomicInteger(0);
+	private final ScheduledExecutorService executor;
+	private final Collection<InfluxSeriesRegistry> registries;
+	private long reportIntervalInMs;
+	protected ScheduledReporter(Collection<InfluxSeriesRegistry> registries, String name) {
+		this(registries, Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory(name + '-' + FACTORY_ID.incrementAndGet())));
+	}
 
-    private static final String OWN_STATS = "influx_metrics_reporter";
-    private final boolean reportOwnStatistics;
-    private final PassiveGauge<Long> reportTimeGauge;
+	protected ScheduledReporter(Collection<InfluxSeriesRegistry> registries, ScheduledExecutorService executor) {
+		this.registries = ImmutableList.copyOf(registries);
+		this.executor = executor;
+	}
 
-    /**
-     * A simple named thread factory.
-     */
-    private static class NamedThreadFactory implements ThreadFactory {
-        private final ThreadGroup group;
-        private final AtomicInteger threadNumber = new AtomicInteger(1);
-        private final String namePrefix;
+	public void start(long period, TimeUnit unit) {
+		reportIntervalInMs = TimeUnit.MILLISECONDS.convert(period, unit);
 
-        private NamedThreadFactory(String name) {
-            final SecurityManager securityManager = System.getSecurityManager();
-            this.group = (securityManager != null) ? securityManager.getThreadGroup() : Thread.currentThread().getThreadGroup();
-            this.namePrefix = "InfluxMetricsReporter-" + name;
-        }
+		executor.scheduleAtFixedRate((Runnable) () -> {
+			try {
+				report();
+			} catch (RuntimeException ex) {
+				logger.error("RuntimeException thrown from {}#report. Exception was suppressed.", ScheduledReporter.this.getClass().getSimpleName(), ex);
+			}
+		}, period, period, unit);
+	}
 
-        @Override
-        public Thread newThread(Runnable target) {
-            final Thread thread = new Thread(group, target, namePrefix + threadNumber.getAndIncrement(), 0);
-            thread.setDaemon(true);
+	public void report() {
+		Stopwatch stopwatch = Stopwatch.createStarted();
+		synchronized (this) {
+			registries.forEach(this::report);
+		}
+		stopwatch.stop();
 
-            if (thread.getPriority() != Thread.NORM_PRIORITY) {
-                thread.setPriority(Thread.NORM_PRIORITY);
-            }
-            return thread;
-        }
-    }
+		final long reportTime = stopwatch.elapsed(TimeUnit.MILLISECONDS);
+		if (reportTime >= reportIntervalInMs * .95f) {
+			logger.warn("Metric reporting took {} ms and reporting interval is set to {} ms", reportTime, reportIntervalInMs);
+		}
 
-    private static final AtomicInteger FACTORY_ID = new AtomicInteger();
+		logger.debug("Metric reporting took {} ms", reportTime);
+		postReport(reportTime);
+	}
 
-    private final InfluxSeriesRegistry registry;
-    private final ScheduledExecutorService executor;
-    private long reportIntervalInMs;
+	protected void postReport(long reportTime) {}
 
-    protected ScheduledReporter(InfluxSeriesRegistry registry,
-                                String name, boolean reportOwnStatistics) {
-        this(registry, name, Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory(name + '-' + FACTORY_ID.incrementAndGet())), reportOwnStatistics);
-    }
+	public void stop() {
+		executor.shutdown();
 
-    protected ScheduledReporter(InfluxSeriesRegistry registry, String name,
-                                ScheduledExecutorService executor, boolean reportOwnStatistics) {
-        this.registry = registry;
-        this.executor = executor;
-        this.reportOwnStatistics = reportOwnStatistics;
-        this.reportTimeGauge = new PassiveGauge<>("report_time", 0L);
+		try {
+			if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
+				executor.shutdownNow();
+				if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
+					logger.error("ScheduledExecutorService did not terminate");
+				}
+			}
+		} catch (InterruptedException ie) {
+			executor.shutdownNow();
+			Thread.currentThread().interrupt();
+		}
+	}
 
-        if (reportOwnStatistics) {
-            registry.timeSeries(OWN_STATS, ImmutableList.of(new MetricTag("reporterName", name)), ImmutableList.of(new Gauge<>("report_interval", () -> reportIntervalInMs), reportTimeGauge));
-        }
-    }
+	protected abstract void report(final InfluxSeriesRegistry registry);
 
-    public void start(long period, TimeUnit unit) {
-        reportIntervalInMs = TimeUnit.MILLISECONDS.convert(period, unit);
+	/**
+	 * A simple named thread factory.
+	 */
+	private static class NamedThreadFactory implements ThreadFactory {
+		private final ThreadGroup group;
+		private final AtomicInteger threadNumber = new AtomicInteger(1);
+		private final String namePrefix;
 
-        executor.scheduleAtFixedRate((Runnable) () -> {
-            try {
-                report();
-            } catch (RuntimeException ex) {
-                logger.error("RuntimeException thrown from {}#report. Exception was suppressed.", ScheduledReporter.this.getClass().getSimpleName(), ex);
-            }
-        }, period, period, unit);
-    }
+		private NamedThreadFactory(String name) {
+			final SecurityManager securityManager = System.getSecurityManager();
+			this.group = (securityManager != null) ? securityManager.getThreadGroup() : Thread.currentThread().getThreadGroup();
+			this.namePrefix = "InfluxMetricsReporter-" + name;
+		}
 
-    public void stop() {
-        executor.shutdown();
+		@Override
+		public Thread newThread(Runnable target) {
+			final Thread thread = new Thread(group, target, namePrefix + threadNumber.getAndIncrement(), 0);
+			thread.setDaemon(true);
 
-        try {
-            if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-                if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
-                    System.err.println(getClass().getSimpleName() + ": ScheduledExecutorService did not terminate");
-                }
-            }
-        } catch (InterruptedException ie) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    public void close() {
-        stop();
-    }
-
-    public void report() {
-        Stopwatch stopwatch = Stopwatch.createStarted();
-        synchronized (this) {
-            report(registry.getSeries());
-        }
-        stopwatch.stop();
-
-        final long reportTime = stopwatch.elapsed(TimeUnit.MILLISECONDS);
-        reportTimeGauge.setValue(reportTime);
-        if (reportTime >= reportIntervalInMs * .95f) {
-            logger.warn("Metric reporting took {} ms and reporting interval is set to {} ms", reportTime, reportIntervalInMs);
-        }
-
-        logger.debug("Metric reporting took {} ms", reportTime);
-    }
-
-    protected abstract void report(final Collection<InfluxSeries> series);
+			if (thread.getPriority() != Thread.NORM_PRIORITY) {
+				thread.setPriority(Thread.NORM_PRIORITY);
+			}
+			return thread;
+		}
+	}
 }

@@ -105,7 +105,9 @@ public class InfluxdbHttpReporter extends ScheduledReporter {
 
     @Override
     protected void postReport(long reportTime) {
-        getAllRegistriesCommittedEventSeries().commitEvent(new MetricsReportedEvent(currentBatchCount.getAndSet(0), currentPointCount.getAndSet(0), reportTime));
+        if (reporterStatsRegistry != null) {
+            getAllRegistriesCommittedEventSeries().commitEvent(new MetricsReportedEvent(currentBatchCount.getAndSet(0), currentPointCount.getAndSet(0), reportTime));
+        }
     }
 
     private EventSeries<MetricsReportedEvent> getAllRegistriesCommittedEventSeries() {
